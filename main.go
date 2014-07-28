@@ -23,8 +23,6 @@ func main() {
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: time.Duration(1) * time.Second,
 		Director: func(req *http.Request) {
-			fmt.Println("BEFORE", req.URL)
-			fmt.Println(req.TLS)
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
@@ -33,8 +31,6 @@ func main() {
 			} else {
 				req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 			}
-			fmt.Println("AFTER", req.Method, req.URL)
-			fmt.Println("HEADERS", req.Header)
 		},
 	}
 
@@ -102,12 +98,6 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		log.Printf("http: proxy error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
-	}
-	fmt.Println("RESPONSE", res)
-	if res.StatusCode == 301 {
-		fmt.Println("REDIRECT:")
-		fmt.Println(outreq.URL)
-		fmt.Println(res.Header.Get("Location"))
 	}
 	defer res.Body.Close()
 
