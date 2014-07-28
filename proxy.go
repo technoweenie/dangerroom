@@ -23,6 +23,7 @@ import (
 type ReverseProxy struct {
 	*httputil.ReverseProxy
 	Client      *http.Client
+	LimitedBody int64
 }
 
 // NewSingleHostReverseProxy returns a new ReverseProxy that rewrites URLs to
@@ -127,6 +128,13 @@ func (p *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
 			defer mlw.stop()
 			dst = mlw
 		}
+	}
+
+	log.Printf("limited body? %d", p.LimitedBody)
+	if p.LimitedBody > 0 {
+		written, err := io.CopyN(dst, src, p.LimitedBody)
+		log.Printf("Limited wrote %d: %v", written, err)
+		return
 	}
 
 	io.Copy(dst, src)

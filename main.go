@@ -11,6 +11,8 @@ func main() {
 		panic(err)
 	}
 
-	http.Handle("/", NewSingleHostReverseProxy(target))
+	proxy := NewSingleHostReverseProxy(target)
+	proxy.LimitedBody = 5
+	http.Handle("/", proxy)
 	http.ListenAndServe(":8080", nil)
 }
