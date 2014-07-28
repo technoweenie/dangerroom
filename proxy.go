@@ -21,7 +21,8 @@ import (
 // not ideal in production environments, but the Danger Room is designed for
 // testing only.
 type ReverseProxy struct {
-  *httputil.ReverseProxy
+	*httputil.ReverseProxy
+	Client      *http.Client
 }
 
 // NewSingleHostReverseProxy returns a new ReverseProxy that rewrites URLs to
@@ -30,7 +31,7 @@ type ReverseProxy struct {
 // for /base/dir.
 func NewSingleHostReverseProxy(target *url.URL) *ReverseProxy {
 	targetQuery := target.RawQuery
-	return &ReverseProxy{&httputil.ReverseProxy{
+	return &ReverseProxy{ReverseProxy: &httputil.ReverseProxy{
 		FlushInterval: time.Duration(1) * time.Second,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
@@ -58,9 +59,9 @@ func singleJoiningSlash(a, b string) string {
 }
 
 func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	transport := p.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
+	cli := p.Client
+	if cli == nil {
+		cli = http.DefaultClient
 	}
 
 	outreq := new(http.Request)
@@ -96,7 +97,7 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("X-Forwarded-For", clientIP)
 	}
 
-	res, err := http.DefaultClient.Do(outreq)
+	res, err := cli.Do(outreq)
 	if err != nil {
 		log.Printf("http: proxy error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
