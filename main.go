@@ -12,7 +12,8 @@ func main() {
 	}
 
 	proxy := NewSingleHostReverseProxy(target)
-	proxy.LimitedBody = 5
+	proxy.LimitedBody = 500
+	proxy.LimitedContentLength = 500
 	http.Handle("/", proxy)
 	http.ListenAndServe(":8080", nil)
 }

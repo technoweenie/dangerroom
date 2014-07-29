@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,9 @@ import (
 // testing only.
 type ReverseProxy struct {
 	*httputil.ReverseProxy
-	Client      *http.Client
-	LimitedBody int64
+	Client               *http.Client
+	LimitedBody          int64
+	LimitedContentLength int64
 }
 
 // NewSingleHostReverseProxy returns a new ReverseProxy that rewrites URLs to
@@ -110,7 +112,14 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		res.Header.Del(h)
 	}
 
-	copyHeader(rw.Header(), res.Header)
+	rwHeader := rw.Header()
+	copyHeader(rwHeader, res.Header)
+
+	if p.LimitedContentLength > 0 {
+		rwHeader.Set("Content-Length", strconv.FormatInt(p.LimitedContentLength, 10))
+	}
+
+	log.Printf("header: %v", rwHeader)
 
 	rw.WriteHeader(res.StatusCode)
 	p.copyResponse(rw, res.Body)
@@ -130,10 +139,8 @@ func (p *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
 		}
 	}
 
-	log.Printf("limited body? %d", p.LimitedBody)
 	if p.LimitedBody > 0 {
-		written, err := io.CopyN(dst, src, p.LimitedBody)
-		log.Printf("Limited wrote %d: %v", written, err)
+		io.CopyN(dst, src, p.LimitedBody)
 		return
 	}
 
