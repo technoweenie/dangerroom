@@ -23,8 +23,13 @@ import (
 // testing only.
 type ReverseProxy struct {
 	*httputil.ReverseProxy
-	Client               *http.Client
-	LimitedBody          int64
+	Client *http.Client
+
+	// LimitedBody is the number of bytes to send from the client response to the
+	// server response.
+	LimitedBody int64
+
+	// LimitedContentLength is Content Length to set on the server response.
 	LimitedContentLength int64
 }
 
@@ -115,7 +120,7 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	rwHeader := rw.Header()
 	copyHeader(rwHeader, res.Header)
 
-	if p.LimitedContentLength > 0 {
+	if p.LimitedContentLength > 0 && p.LimitedContentLength < res.ContentLength {
 		rwHeader.Set("Content-Length", strconv.FormatInt(p.LimitedContentLength, 10))
 	}
 
