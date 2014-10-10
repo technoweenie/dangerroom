@@ -73,8 +73,16 @@ func singleJoiningSlash(a, b string) string {
 // target's path is "/base" and the incoming request was for "/dir",
 // the target request will be for /base/dir.
 func NewSingleHostProxy(target *url.URL, h Harness, c *http.Client) *Proxy {
+	return &Proxy{
+		Client:   c,
+		Harness:  h,
+		Director: NewSingleHostDirector(target),
+	}
+}
+
+func NewSingleHostDirector(target *url.URL) func(*http.Request) {
 	targetQuery := target.RawQuery
-	director := func(req *http.Request) {
+	return func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
@@ -83,12 +91,6 @@ func NewSingleHostProxy(target *url.URL, h Harness, c *http.Client) *Proxy {
 		} else {
 			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 		}
-	}
-
-	return &Proxy{
-		Client:   c,
-		Harness:  h,
-		Director: director,
 	}
 }
 
