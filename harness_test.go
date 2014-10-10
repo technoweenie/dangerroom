@@ -39,7 +39,8 @@ func TestNoOp(t *testing.T) {
 }
 
 func Setup(t *testing.T, h Harness) *TestContext {
-	http.DefaultServeMux.HandleFunc("/origin/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/origin/", func(w http.ResponseWriter, r *http.Request) {
 		head := w.Header()
 		head.Set("Content-Type", "text/plain")
 		head.Set("Content-Length", "2")
@@ -47,7 +48,7 @@ func Setup(t *testing.T, h Harness) *TestContext {
 		w.Write([]byte("ok"))
 	})
 
-	srv := httptest.NewServer(http.DefaultServeMux)
+	srv := httptest.NewServer(mux)
 	ctx := &TestContext{srv, t}
 
 	u, err := url.Parse(srv.URL + "/origin")
@@ -56,7 +57,7 @@ func Setup(t *testing.T, h Harness) *TestContext {
 	}
 
 	proxy := NewSingleHostProxy(u, h, nil)
-	http.DefaultServeMux.Handle("/proxy", proxy)
+	mux.Handle("/proxy", proxy)
 
 	return ctx
 }
