@@ -58,8 +58,13 @@ func setResource(w http.ResponseWriter, r *http.Request, mux *http.ServeMux, res
 		prefix = r.URL.Path[dangerPrefixLen-1:]
 	}
 
-	proxy := NewSingleHostProxy(u, prefix, harness, nil)
-	mux.Handle(prefix+"/", proxy)
+	if proxy, ok := proxiedPaths[prefix]; ok {
+		proxy.Harness = harness
+	} else {
+		proxy = NewSingleHostProxy(u, prefix, harness, nil)
+		proxiedPaths[prefix] = proxy
+		mux.Handle(prefix+"/", proxy)
+	}
 
 	w.WriteHeader(200)
 	w.Write([]byte(fmt.Sprintf("%s resource set on %s\n", reflect.TypeOf(resource), prefix)))
@@ -85,4 +90,5 @@ func getResource(r *http.Request) (HarnessResource, error) {
 var (
 	ctypeRE         = regexp.MustCompile(`\Aapplication\/vnd\.danger\-room\.([\w\-\_]+)\+json`)
 	dangerPrefixLen = len("/~danger/")
+	proxiedPaths    = make(map[string]*Proxy)
 )
