@@ -32,6 +32,9 @@ var onExitFlushLoop func()
 // not ideal in production environments, but the Danger Room is designed for
 // testing only.
 type Proxy struct {
+	Client  *http.Client
+	Harness Harness
+
 	// Director must be a function which modifies
 	// the request into a new request to be sent
 	// using Transport. Its response is then copied
@@ -71,7 +74,7 @@ func singleJoiningSlash(a, b string) string {
 // URLs to the scheme, host, and base path provided in target. If the
 // target's path is "/base" and the incoming request was for "/dir",
 // the target request will be for /base/dir.
-func NewSingleHostProxy(target *url.URL) *Proxy {
+func NewSingleHostProxy(target *url.URL, h Harness, c *http.Client) *Proxy {
 	targetQuery := target.RawQuery
 	director := func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
@@ -83,7 +86,12 @@ func NewSingleHostProxy(target *url.URL) *Proxy {
 			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 		}
 	}
-	return &Proxy{Director: director}
+
+	return &Proxy{
+		Client:   c,
+		Harness:  h,
+		Director: director,
+	}
 }
 
 func copyHeader(dst, src http.Header) {
@@ -108,9 +116,14 @@ var hopHeaders = []string{
 }
 
 func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	transport := p.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
+	cli := p.Client
+	if cli == nil {
+		cli = http.DefaultClient
+	}
+
+	h := p.Harness
+	if h == nil {
+		h = NoopHarness()
 	}
 
 	outreq := new(http.Request)
@@ -149,7 +162,7 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("X-Forwarded-For", clientIP)
 	}
 
-	res, err := transport.RoundTrip(outreq)
+	res, err := cli.Do(outreq)
 	if err != nil {
 		p.logf("http: proxy error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
@@ -161,9 +174,12 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		res.Header.Del(h)
 	}
 
-	copyHeader(rw.Header(), res.Header)
+	rwHeader := rw.Header()
+	copyHeader(rwHeader, res.Header)
 
-	rw.WriteHeader(res.StatusCode)
+	status := h.WriteHeader(res.StatusCode, rwHeader)
+
+	rw.WriteHeader(status)
 	p.copyResponse(rw, res.Body)
 }
 
@@ -181,7 +197,9 @@ func (p *Proxy) copyResponse(dst io.Writer, src io.Reader) {
 		}
 	}
 
-	io.Copy(dst, src)
+	if !h.WriteBody(dst, src) {
+		io.Copy(dst, src)
+	}
 }
 
 func (p *Proxy) logf(format string, args ...interface{}) {
