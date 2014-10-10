@@ -11,9 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,11 +117,13 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	cli := p.Client
 	if cli == nil {
 		cli = http.DefaultClient
+		p.Client = cli
 	}
 
 	h := p.Harness
 	if h == nil {
 		h = NoopHarness()
+		p.Harness = h
 	}
 
 	outreq := new(http.Request)
@@ -161,7 +161,7 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		outreq.Header.Set("X-Forwarded-For", clientIP)
 	}
-
+	outreq.RequestURI = ""
 	res, err := cli.Do(outreq)
 	if err != nil {
 		p.logf("http: proxy error: %v", err)
@@ -180,10 +180,10 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	status := h.WriteHeader(res.StatusCode, rwHeader)
 
 	rw.WriteHeader(status)
-	p.copyResponse(rw, res.Body)
+	p.copyResponse(rw, res.Body, h)
 }
 
-func (p *Proxy) copyResponse(dst io.Writer, src io.Reader) {
+func (p *Proxy) copyResponse(dst io.Writer, src io.Reader, h Harness) {
 	if p.FlushInterval != 0 {
 		if wf, ok := dst.(writeFlusher); ok {
 			mlw := &maxLatencyWriter{

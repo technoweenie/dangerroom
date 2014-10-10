@@ -1,6 +1,7 @@
 package dangerroom
 
 import (
+	"io"
 	"net/http"
 )
 
@@ -9,7 +10,7 @@ type Harness interface {
 	WriteBody(io.Writer, io.Reader) bool
 }
 
-func NoopHarness() *Harness {
+func NoopHarness() Harness {
 	return &noopHarness{}
 }
 
