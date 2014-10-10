@@ -28,6 +28,10 @@ type LimitingHarnessResource struct {
 	Harness *LimitingHarness `json:"harness"`
 }
 
+func (r *LimitingHarnessResource) TargetAndHarness() (string, Harness) {
+	return r.Target, r.Harness
+}
+
 func init() {
-	AddHarness("limiting-harness", func() interface{} { return &LimitingHarnessResource{} })
+	AddHarness("limiting-harness", func() HarnessResource { return &LimitingHarnessResource{} })
 }

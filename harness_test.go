@@ -56,7 +56,7 @@ func Setup(t *testing.T, h Harness) *TestContext {
 		t.Fatal(err.Error())
 	}
 
-	proxy := NewSingleHostProxy(u, h, nil)
+	proxy := NewSingleHostProxy(u, "", h, nil)
 	mux.Handle("/proxy", proxy)
 
 	return ctx

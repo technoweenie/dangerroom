@@ -7,6 +7,7 @@
 package dangerroom
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -72,20 +73,25 @@ func singleJoiningSlash(a, b string) string {
 // URLs to the scheme, host, and base path provided in target. If the
 // target's path is "/base" and the incoming request was for "/dir",
 // the target request will be for /base/dir.
-func NewSingleHostProxy(target *url.URL, h Harness, c *http.Client) *Proxy {
+func NewSingleHostProxy(target *url.URL, prefix string, h Harness, c *http.Client) *Proxy {
 	return &Proxy{
 		Client:   c,
 		Harness:  h,
-		Director: NewSingleHostDirector(target),
+		Director: NewSingleHostDirector(target, prefix),
 	}
 }
 
-func NewSingleHostDirector(target *url.URL) func(*http.Request) {
+func NewSingleHostDirector(target *url.URL, prefix string) func(*http.Request) {
 	targetQuery := target.RawQuery
 	return func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+		path := singleJoiningSlash(target.Path, req.URL.Path)
+		if prefixLen := len(prefix); prefixLen > 0 {
+			req.URL.Path = path[prefixLen+1:]
+		} else {
+			req.URL.Path = path
+		}
 		if targetQuery == "" || req.URL.RawQuery == "" {
 			req.URL.RawQuery = targetQuery + req.URL.RawQuery
 		} else {
@@ -129,27 +135,26 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	outreq := new(http.Request)
-	*outreq = *req // includes shallow copies of maps, but okay
+	*outreq = *req     // includes shallow copies of maps, but okay
+	p.Director(outreq) // modify request url
 
-	p.Director(outreq)
-	outreq.Proto = "HTTP/1.1"
-	outreq.ProtoMajor = 1
-	outreq.ProtoMinor = 1
-	outreq.Close = false
+	outreq, err := http.NewRequest(req.Method, outreq.URL.String(), req.Body)
+	if err != nil {
+		log.Printf("http: request error: %v", err)
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	outreq.Header = make(http.Header)
+	copyHeader(outreq.Header, req.Header)
 
 	// Remove hop-by-hop headers to the backend.  Especially
 	// important is "Connection" because we want a persistent
 	// connection, regardless of what the client sent to us.  This
 	// is modifying the same underlying map from req (shallow
 	// copied above) so we only copy it if necessary.
-	copiedHeaders := false
 	for _, h := range hopHeaders {
 		if outreq.Header.Get(h) != "" {
-			if !copiedHeaders {
-				outreq.Header = make(http.Header)
-				copyHeader(outreq.Header, req.Header)
-				copiedHeaders = true
-			}
 			outreq.Header.Del(h)
 		}
 	}
@@ -163,11 +168,11 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		outreq.Header.Set("X-Forwarded-For", clientIP)
 	}
-	outreq.RequestURI = ""
+
 	res, err := cli.Do(outreq)
 	if err != nil {
-		p.logf("http: proxy error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
+		rw.Write([]byte(fmt.Sprintf("http: proxy error: %v\n", err)))
 		return
 	}
 	defer res.Body.Close()
@@ -201,14 +206,6 @@ func (p *Proxy) copyResponse(dst io.Writer, src io.Reader, h Harness) {
 
 	if !h.WriteBody(dst, src) {
 		io.Copy(dst, src)
-	}
-}
-
-func (p *Proxy) logf(format string, args ...interface{}) {
-	if p.ErrorLog != nil {
-		p.ErrorLog.Printf(format, args...)
-	} else {
-		log.Printf(format, args...)
 	}
 }
 

@@ -12,7 +12,11 @@ type Harness interface {
 	WriteBody(io.Writer, io.Reader) bool
 }
 
-type HarnessFunc func() interface{}
+type HarnessResource interface {
+	TargetAndHarness() (string, Harness)
+}
+
+type HarnessFunc func() HarnessResource
 
 func AddHarness(ctype string, f HarnessFunc) {
 	Harnesses[ctype] = f
