@@ -1,4 +1,10 @@
-package main
+// Copyright 2011 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// HTTP reverse proxy handler (modified for D)
+
+package dangerroom
 
 import (
 	"io"
@@ -13,45 +19,40 @@ import (
 	"time"
 )
 
-// ReverseProxy is an HTTP Handler that takes an incoming request and sends it
+// onExitFlushLoop is a callback set by tests to detect the state of the
+// flushLoop() goroutine.
+var onExitFlushLoop func()
+
+// Proxy is an HTTP Handler that takes an incoming request and sends it
 // to another server, proxying the response back to the client.
 
 // This differs from httputil.ReverseProxy because it creates an HTTP client
-// connection to the target, instead of just using the ReverseProxy's Transport.
+// connection to the target, instead of just using the Proxy's Transport.
 // This allows it to proxy from HTTP to an HTTPS target.  This is probably
 // not ideal in production environments, but the Danger Room is designed for
 // testing only.
-type ReverseProxy struct {
-	*httputil.ReverseProxy
-	Client *http.Client
+type Proxy struct {
+	// Director must be a function which modifies
+	// the request into a new request to be sent
+	// using Transport. Its response is then copied
+	// back to the original client unmodified.
+	Director func(*http.Request)
 
-	// LimitedBody is the number of bytes to send from the client response to the
-	// server response.
-	LimitedBody int64
+	// The transport used to perform proxy requests.
+	// If nil, http.DefaultTransport is used.
+	Transport http.RoundTripper
 
-	// LimitedContentLength is Content Length to set on the server response.
-	LimitedContentLength int64
-}
+	// FlushInterval specifies the flush interval
+	// to flush to the client while copying the
+	// response body.
+	// If zero, no periodic flushing is done.
+	FlushInterval time.Duration
 
-// NewSingleHostReverseProxy returns a new ReverseProxy that rewrites URLs to
-// the scheme, host, and base path provided in target. If the target's path is
-// "/base" and the incoming request was for "/dir", the target request will be
-// for /base/dir.
-func NewSingleHostReverseProxy(target *url.URL) *ReverseProxy {
-	targetQuery := target.RawQuery
-	return &ReverseProxy{ReverseProxy: &httputil.ReverseProxy{
-		FlushInterval: time.Duration(1) * time.Second,
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
-			if targetQuery == "" || req.URL.RawQuery == "" {
-				req.URL.RawQuery = targetQuery + req.URL.RawQuery
-			} else {
-				req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
-			}
-		},
-	}}
+	// ErrorLog specifies an optional logger for errors
+	// that occur when attempting to proxy the request.
+	// If nil, logging goes to os.Stderr via the log package's
+	// standard logger.
+	ErrorLog *log.Logger
 }
 
 func singleJoiningSlash(a, b string) string {
@@ -66,31 +67,74 @@ func singleJoiningSlash(a, b string) string {
 	return a + b
 }
 
-func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	cli := p.Client
-	if cli == nil {
-		cli = http.DefaultClient
+// NewSingleHostProxy returns a new Proxy that rewrites
+// URLs to the scheme, host, and base path provided in target. If the
+// target's path is "/base" and the incoming request was for "/dir",
+// the target request will be for /base/dir.
+func NewSingleHostProxy(target *url.URL) *Proxy {
+	targetQuery := target.RawQuery
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+		if targetQuery == "" || req.URL.RawQuery == "" {
+			req.URL.RawQuery = targetQuery + req.URL.RawQuery
+		} else {
+			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+		}
+	}
+	return &Proxy{Director: director}
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	transport := p.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
 	}
 
 	outreq := new(http.Request)
-	outreq, err := http.NewRequest(req.Method, req.URL.String(), req.Body)
-	if err != nil {
-		log.Printf("http: request error: %v", err)
-		rw.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	outreq.Header = make(http.Header)
-	copyHeader(outreq.Header, req.Header)
+	*outreq = *req // includes shallow copies of maps, but okay
 
 	p.Director(outreq)
+	outreq.Proto = "HTTP/1.1"
+	outreq.ProtoMajor = 1
+	outreq.ProtoMinor = 1
+	outreq.Close = false
 
 	// Remove hop-by-hop headers to the backend.  Especially
 	// important is "Connection" because we want a persistent
 	// connection, regardless of what the client sent to us.  This
 	// is modifying the same underlying map from req (shallow
 	// copied above) so we only copy it if necessary.
+	copiedHeaders := false
 	for _, h := range hopHeaders {
 		if outreq.Header.Get(h) != "" {
+			if !copiedHeaders {
+				outreq.Header = make(http.Header)
+				copyHeader(outreq.Header, req.Header)
+				copiedHeaders = true
+			}
 			outreq.Header.Del(h)
 		}
 	}
@@ -105,9 +149,9 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("X-Forwarded-For", clientIP)
 	}
 
-	res, err := cli.Do(outreq)
+	res, err := transport.RoundTrip(outreq)
 	if err != nil {
-		log.Printf("http: proxy error: %v", err)
+		p.logf("http: proxy error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -117,20 +161,13 @@ func (p *ReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		res.Header.Del(h)
 	}
 
-	rwHeader := rw.Header()
-	copyHeader(rwHeader, res.Header)
-
-	if p.LimitedContentLength > 0 && p.LimitedContentLength < res.ContentLength {
-		rwHeader.Set("Content-Length", strconv.FormatInt(p.LimitedContentLength, 10))
-	}
-
-	log.Printf("header: %v", rwHeader)
+	copyHeader(rw.Header(), res.Header)
 
 	rw.WriteHeader(res.StatusCode)
 	p.copyResponse(rw, res.Body)
 }
 
-func (p *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
+func (p *Proxy) copyResponse(dst io.Writer, src io.Reader) {
 	if p.FlushInterval != 0 {
 		if wf, ok := dst.(writeFlusher); ok {
 			mlw := &maxLatencyWriter{
@@ -144,31 +181,20 @@ func (p *ReverseProxy) copyResponse(dst io.Writer, src io.Reader) {
 		}
 	}
 
-	if p.LimitedBody > 0 {
-		io.CopyN(dst, src, p.LimitedBody)
-		return
-	}
-
 	io.Copy(dst, src)
 }
 
-var hopHeaders = []string{
-	"Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Te", // canonicalized version of "TE"
-	"Trailers",
-	"Transfer-Encoding",
-	"Upgrade",
+func (p *Proxy) logf(format string, args ...interface{}) {
+	if p.ErrorLog != nil {
+		p.ErrorLog.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
 }
 
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
+type writeFlusher interface {
+	io.Writer
+	http.Flusher
 }
 
 type maxLatencyWriter struct {
@@ -204,12 +230,3 @@ func (m *maxLatencyWriter) flushLoop() {
 }
 
 func (m *maxLatencyWriter) stop() { m.done <- true }
-
-type writeFlusher interface {
-	io.Writer
-	http.Flusher
-}
-
-// onExitFlushLoop is a callback set by tests to detect the state of the
-// flushLoop() goroutine.
-var onExitFlushLoop func()
